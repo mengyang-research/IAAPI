@@ -1,0 +1,170 @@
+# IA-API Default Configuration
+# Base configuration for training IA-API models
+
+# Model architecture
+model:
+  name: "iaapi-base"
+  d_embed: 256  # Embedding dimension
+  k_max: 30  # Maximum subspace dimension
+
+  # MASE Encoder (Module A)
+  mase_encoder:
+    n_layers: 6
+    n_heads: 8
+    d_model: 256
+    d_ff: 1024
+    dropout: 0.1
+
+  # Observation Encoder (Module B)
+  obs_encoder:
+    n_heads: 8
+    n_isab: 4  # Number of ISAB layers
+    n_inducing: 32  # Number of inducing points
+    d_model: 256
+    d_ff: 1024
+    dropout: 0.1
+    time_scale: 100.0
+
+  # ISP Head (Module C)
+  isp_head:
+    n_flow_layers: 8
+    flow_hidden_dim: 256
+    use_attn_subspace: true
+    soft_gating: true
+    sloppy_prior_mode: "mixture"  # "mixture" or "uniform"
+
+# Training configuration
+training:
+  batch_size: 64  # Per GPU
+  num_workers: 4
+  gradient_accumulation_steps: 1
+  max_epochs: 100
+  max_steps: 200000  # Total training steps
+
+  # Optimizer
+  optimizer:
+    name: "adamw"
+    lr: 3.0e-4
+    betas: [0.9, 0.999]
+    weight_decay: 1.0e-5
+    eps: 1.0e-8
+
+  # Learning rate scheduler
+  scheduler:
+    name: "cosine"
+    warmup_steps: 2000
+    warmup_start_lr: 1.0e-6
+    min_lr: 1.0e-6
+
+  # Gradient clipping
+  clip_grad_norm: 1.0
+  clip_grad_value: null
+
+  # Mixed precision
+  precision: "bf16"  # "32", "bf16", or "16"
+
+# Loss function weights
+loss:
+  lambda_nll: 1.0  # Negative log-likelihood
+  lambda_subspace: 1.0  # Subspace Grassmannian distance
+  lambda_orth: 0.1  # Orthogonality constraint
+  lambda_rank: 0.5  # Rank prediction
+
+# Data configuration
+data:
+  # Training data sources
+  petab_benchmark:
+    enabled: true
+    path: "../Benchmark-Models-PEtab/Benchmark-Models"
+    n_samples_per_model: 500
+    models:
+      - "Boehm_JProteomeRes2014"
+      - "Fujita_SciSignal2010"
+      - "Lucarelli_CellSystems2018"
+      - "Elowitz_Nature2000"
+      - "Borghans_BiophysChem1997"
+
+  biomodels:
+    enabled: true
+    path: "../data/biomodels_candidates"
+    n_samples_per_model: 200
+
+  # Data generation
+  data_generator:
+    noise_level: 0.1  # Relative noise level
+    min_time_points: 10
+    max_time_points: 100
+    time_span: [0, 100]
+    theta_scale: "log10"
+    amici_cache_dir: "~/.cache/iaapi/amici"
+    force_compile: false
+    compute_sensitivities: true
+    sensitivity_method: "forward"
+    shard_size: 10000
+    resume: true
+    max_retries: 3
+    checkpoint_every: 100
+    split_seed: 42
+    parallelism: "model"
+
+  dataset:
+    manifest_path: "./training_data/manifest.json"
+
+  # Bio priors
+  bio_priors:
+    path: "../data/bio_priors"
+    enabled: true
+
+# Evaluation configuration
+evaluation:
+  eval_every: 5000  # Steps
+  save_every: 10000  # Steps
+  n_sbc_samples: 1000
+  coverage_levels: [0.50, 0.68, 0.95]
+
+  # Validation split
+  val_split: 0.1
+  test_split: 0.1
+
+# Logging and checkpointing
+logging:
+  # Wandb
+  wandb:
+    enabled: true
+    project: "iaapi"
+    entity: null  # Your wandb entity
+    name: null  # Auto-generated if null
+
+  # Checkpoints
+  checkpoint_dir: "./checkpoints"
+  resume_from: null  # Path to checkpoint to resume from
+
+  # Tensorboard
+  tensorboard:
+    enabled: true
+    log_dir: "./logs"
+
+# System configuration
+system:
+  # Distributed training
+  distributed: true
+  num_gpus: 4  # Number of GPUs to use
+  backend: "nccl"
+
+  # Random seed
+  seed: 42
+
+  # Mixed precision settings
+  allow_tf32: true
+
+# OED configuration
+oed:
+  enabled: false
+  n_candidate_experiments: 100
+  optimization_method: "greedy"
+
+# Refinement configuration
+refinement:
+  enabled: false
+  n_refinement_steps: 100
+  refinement_lr: 1.0e-3

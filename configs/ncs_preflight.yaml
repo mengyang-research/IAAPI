@@ -1,0 +1,22 @@
+# PEtab preflight scanner config (NCS P1-01).
+# petab_root is resolved relative to iaapi/ (project convention).
+petab_root: "../Benchmark-Models-PEtab/Benchmark-Models"
+models:
+  - "Bertozzi_PNAS2020"
+  - "Boehm_JProteomeRes2014"
+  - "Crauste_CellSystems2017"
+  - "Elowitz_Nature2000"
+  - "Fujita_SciSignal2010"
+  - "Liu_IFACPapersOnLine2025"
+  - "Perelson_Science1996"
+  - "Rahman_MBS2016"
+n_samples: 50
+seed: 0
+noise_level: 0.1
+forward_success_threshold: 0.90
+sensitivity_success_threshold: 0.80
+runtime_p95_threshold_s: 300.0
+per_simulate_timeout_s: 120.0
+per_model_timeout_s: 1800.0
+amici_cache_dir: "~/.cache/iaapi/amici"
+output_version: "v1"

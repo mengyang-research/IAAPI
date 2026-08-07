@@ -1,0 +1,89 @@
+# IA-API Toy Problem Configuration
+# Small-scale configuration for validation on toy problems
+
+# Inherit from default
+defaults:
+  - default
+
+# Override model architecture for faster training
+model:
+  name: "iaapi-toy"
+  d_embed: 64  # Smaller embedding dimension
+  k_max: 10  # Smaller maximum subspace dimension
+
+  mase_encoder:
+    n_layers: 3
+    n_heads: 4
+    d_model: 64
+    d_ff: 256
+    dropout: 0.1
+
+  obs_encoder:
+    n_heads: 4
+    n_isab: 2
+    n_inducing: 16
+    d_model: 64
+    dropout: 0.1
+
+  isp_head:
+    n_flow_layers: 4
+    flow_hidden_dim: 64
+
+# Training configuration for toy problems
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 1
+  max_epochs: 50
+  max_steps: 50000
+
+  optimizer:
+    lr: 1.0e-3
+
+  scheduler:
+    warmup_steps: 500
+
+# Toy problem specific data
+data:
+  toy_problems:
+    enabled: true
+    n_samples_per_problem: 10000
+
+    problems:
+      - name: "lotka_volterra"
+        n_species: 2
+        n_params: 4
+        time_span: [0, 50]
+
+      - name: "sir"
+        n_species: 3
+        n_params: 3
+        time_span: [0, 100]
+
+      - name: "michaelis_menten"
+        n_species: 2
+        n_params: 4
+        time_span: [0, 30]
+
+  # Disable large-scale data sources
+  petab_benchmark:
+    enabled: false
+
+  biomodels:
+    enabled: false
+
+# Evaluation
+evaluation:
+  eval_every: 1000
+  save_every: 5000
+  n_sbc_samples: 1000
+
+# System
+system:
+  num_gpus: 1  # Single GPU for toy problems
+
+# Logging
+logging:
+  wandb:
+    project: "iaapi-toy"
+    entity: null
+    name: null
