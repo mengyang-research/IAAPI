@@ -1,0 +1,33 @@
+# Paper reproduction configuration — single-model specialist (NSF).
+#
+# Same specialist protocol as specialist_maf.yaml but with a neural spline
+# flow (NSF): rational-quadratic splines, 8 bins, tail bound 5 (paper Table 2).
+
+defaults:
+  - unified
+
+model:
+  name: "iaapi-paper-specialist-nsf"
+  isp_head:
+    flow_type: "nsf"
+    n_flow_layers: 8
+    flow_hidden_dim: 384
+    num_bins: 8  # paper: NSF 8 bins
+    tail_bound: 5.0  # paper: tail bound 5
+
+training:
+  batch_size: 12
+  gradient_accumulation_steps: 1
+  max_steps: 80000
+  precision: "32"
+
+  optimizer:
+    lr: 2.0e-4
+
+  scheduler:
+    warmup_steps: 500
+
+specialist:
+  warm_start_from: "unified"
+  freeze_modules: ["mase", "obs_encoder"]
+  early_stopping_patience: 5000

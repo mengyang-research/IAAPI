@@ -124,7 +124,13 @@ class ISPLoss(nn.Module):
         theta_parallel = torch.einsum("bnk,bk->bn", U, alpha)
         residual = (theta_masked - theta_parallel).masked_fill(~param_mask, 0.0)
         log_prob = isp_output.q_parallel.log_prob(alpha, context, isp_output.column_mask)
-        log_prob = log_prob + isp_output.q_perp.log_prob(residual, isp_output.perp_features, param_mask)
+        # Paper back-off formula: q_perp variance = b * sigmoid(m) + eps with b the
+        # *projected* prior variance diag(U_perp^T Sigma_prior U_perp), computed in
+        # ISPHead.forward when the batch provides prior_cov.
+        log_prob = log_prob + isp_output.q_perp.log_prob(
+            residual, isp_output.perp_features, param_mask,
+            prior_var_perp=isp_output.prior_var_perp,
+        )
         return -log_prob.mean()
 
     def _compute_subspace_loss(self, outputs: dict, batch: dict) -> torch.Tensor:

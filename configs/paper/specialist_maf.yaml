@@ -1,0 +1,34 @@
+# Paper reproduction configuration — single-model specialist (MAF).
+#
+# Single-model specialists warm-start from the unified backbone, freeze MASE
+# and the observation encoder, and train for 40,000-80,000 steps (model
+# dependent) with effective batch 12, LR 2e-4, and early stopping patience
+# 5,000 steps (paper Online Methods). The flow is a 12-layer masked
+# autoregressive flow (MAF), hidden 384, reverse permutation.
+
+defaults:
+  - unified
+
+model:
+  name: "iaapi-paper-specialist-maf"
+  isp_head:
+    flow_type: "maf"
+    n_flow_layers: 12  # paper: MAF 12 layers
+    flow_hidden_dim: 384  # paper: hidden 384
+
+training:
+  batch_size: 12
+  gradient_accumulation_steps: 1
+  max_steps: 80000  # within the paper's 40,000-80,000 specialist range
+  precision: "32"
+
+  optimizer:
+    lr: 2.0e-4  # paper: specialist fine-tune LR (flow)
+
+  scheduler:
+    warmup_steps: 500
+
+specialist:
+  warm_start_from: "unified"  # warm-start from the unified backbone
+  freeze_modules: ["mase", "obs_encoder"]
+  early_stopping_patience: 5000

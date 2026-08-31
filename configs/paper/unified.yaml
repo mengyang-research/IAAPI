@@ -1,0 +1,59 @@
+# Paper reproduction configuration — unified ISP backbone.
+#
+# This is the immutable configuration that reproduces the paper's Table 2
+# hyperparameters for the unified (amortized) ISP model. Every value here is
+# taken from the paper's Online Methods / Table 2. Training must be launched
+# with this file, and the fully-resolved config (after defaults merge) must be
+# saved into the run directory.
+#
+# Differences from configs/default.yaml are intentional and documented in the
+# paper: k_max=28 (corpus max admitted rank 24 + padding 4), 100,000 steps,
+# effective batch 36 (3 x 12), flow LR 5e-5, float32 precision (bf16 was
+# abandoned after flow log-determinant instability), 500 SBC posterior
+# samples, and 12-layer specialist flows.
+
+defaults:
+  - default
+
+model:
+  name: "iaapi-paper-unified"
+  k_max: 28  # paper Table 2: maximum subspace dimension
+
+  isp_head:
+    n_flow_layers: 8
+    flow_hidden_dim: 256
+
+training:
+  batch_size: 12  # physical batch per GPU
+  gradient_accumulation_steps: 3  # effective batch 36
+  max_steps: 100000  # paper Table 2
+  precision: "32"  # float32; bf16 abandoned (flow log-det instability)
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5  # paper Table 2: flow learning rate
+    betas: [0.9, 0.999]
+    weight_decay: 1.0e-5
+    eps: 1.0e-8
+
+  scheduler:
+    name: "cosine"
+    warmup_steps: 2000
+    warmup_start_lr: 1.0e-6
+    min_lr: 1.0e-6
+
+  clip_grad_norm: 1.0
+
+loss:
+  lambda_nll: 1.0
+  lambda_subspace: 1.0
+  lambda_orth: 0.1
+  lambda_rank: 0.5
+  lambda_calibration: 0.0  # calibration loss weight (energy score) if enabled
+
+evaluation:
+  n_sbc_samples: 500  # paper: K=500 posterior samples per SBC test point
+  coverage_levels: [0.50, 0.68, 0.95]
+
+system:
+  precision_notes: "float32 for all flow computations; bf16 disabled per paper"

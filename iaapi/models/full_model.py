@@ -243,7 +243,13 @@ class IAAPIModel(nn.Module):
                 theta_mean_pred = 10.0 * torch.tanh(self.mean_regressor_norm(theta_mean_pred))
 
         # Get ISP output (pass FIM eigenvalues for cross-model invariant rank features)
-        isp_output = self.isp_head(z_theta, z_D, n_params, batch.get("fim_eigenvalues"), amp_feats)
+        # and the per-parameter prior variance (diagonal of Sigma_prior) so the
+        # back-off distribution uses the paper's projected prior variance.
+        prior_cov = batch.get("prior_cov")
+        if prior_cov is not None:
+            prior_cov = prior_cov.to(device=z_theta.device, dtype=z_theta.dtype)
+        isp_output = self.isp_head(z_theta, z_D, n_params, batch.get("fim_eigenvalues"),
+                                   amp_feats, prior_cov=prior_cov)
 
         # Return results
         return {

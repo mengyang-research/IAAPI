@@ -1,0 +1,21 @@
+# Paper reproduction configuration — OOD sequential refinement.
+#
+# Matches the paper's Online Methods: SNPE update (Greenberg et al. 2019) with
+# the pre-trained ISP posterior as the initial proposal. Online stopping is a
+# fixed simulation budget or a total-variation distance < 0.02 between
+# consecutive refinement posteriors (SBC is offline-only). The evaluation grid
+# {0, 10, 25, 50, 100, 250} simulations is the offline sample-efficiency
+# curve, not the online budget.
+
+refinement:
+  enabled: true
+  simulation_budget: 100
+  round_size: 25
+  optimization_steps: 200
+  max_rounds: 10
+  tv_tol: 0.02
+  seed: 0
+
+  # Offline evaluation grid (per paper): additional simulations at which the
+  # sample-efficiency curve is reported.
+  evaluation_grid: [0, 10, 25, 50, 100, 250]

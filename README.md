@@ -164,6 +164,26 @@ python -m build
 
 Some integration tests require AMICI and external PEtab benchmark models; those tests are marked `slow`.
 
+## Reproducing the paper hyperparameters
+
+The frozen reproduction configurations live in [`configs/paper/`](configs/paper):
+
+- `unified.yaml` — the paper's unified (amortized) ISP: k_max=28, 100,000
+  steps, effective batch 36, flow LR 5e-5, float32 precision, 500 SBC samples;
+- `specialist_maf.yaml` / `specialist_nsf.yaml` — single-model specialists
+  (12-layer MAF / 8-bin NSF, hidden 384, warm-started from the unified
+  backbone, frozen MASE/obs-encoder);
+- `mcmc.yaml` — the MCMC reference protocol (>=32 walkers and >=4/parameter,
+  2,000 steps, 1,000 burn-in, independent ensembles, rank-normalized split-R-hat
+  <1.01, bulk/tail ESS >100, autocorrelation-time coverage >=20x);
+- `refinement.yaml` — OOD SNPE refinement (budget 100, round size 25, TV
+  early stop 0.02, offline evaluation grid {0,10,25,50,100,250}).
+
+The model-level frozen split manifest (`iaapi/evaluation/split_manifest.py`)
+records every model's role (train/validation/sealed_test/ood/case_study),
+supervision flags, lineage, and data SHA256, and fails on any
+parent/perturbation lineage that crosses splits.
+
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [BSD 3-Clause License](LICENSE).

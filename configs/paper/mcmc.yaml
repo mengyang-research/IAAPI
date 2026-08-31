@@ -1,0 +1,23 @@
+# Paper reproduction configuration — MCMC reference protocol.
+#
+# Matches the paper's Methods: at least 32 walkers and at least 4 walkers per
+# parameter (whichever is larger), 2,000 sampling steps, 1,000 burn-in, run as
+# several independent ensembles (walkers within one ensemble are NOT treated
+# as independent chains). Convergence: rank-normalized split-R-hat < 1.01,
+# bulk and tail ESS > 100, and total chain length covering at least 20
+# integrated autocorrelation times.
+
+mcmc:
+  n_walkers: 32
+  n_steps: 2000
+  n_burn: 1000
+  n_ensembles: 4
+  rhat_threshold: 1.01
+  ess_threshold: 100.0
+  tau_coverage: 20.0
+  timeout_s: 600.0
+  ball_scale: 0.05
+
+  # Hard rule: n_walkers is auto-raised to max(n_walkers, 2 * n_parameters)
+  # to satisfy emcee's default StretchMove requirement.
+  enforce_walkers_min_2d: true

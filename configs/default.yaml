@@ -60,8 +60,10 @@ training:
   clip_grad_norm: 1.0
   clip_grad_value: null
 
-  # Mixed precision
-  precision: "bf16"  # "32", "bf16", or "16"
+  # Mixed precision. The paper's reproduction configs (configs/paper/*) use
+  # float32 for all flow computations: bf16 led to numerical instabilities in
+  # the normalizing-flow log-determinant computation and was abandoned.
+  precision: "32"  # "32", "bf16", or "16"
 
 # Loss function weights
 loss:
