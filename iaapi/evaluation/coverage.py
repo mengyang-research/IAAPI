@@ -1,211 +1,113 @@
-"""
-Coverage evaluation for posterior inference.
+"""Coverage from actual posterior samples and known generating parameters.
 
-Checks if posterior credible intervals have correct coverage probabilities.
+A provider is required because PEtab real observations do not have known
+parameter truth. Per-problem summaries average coordinate indicators; they
+are not independent simulation-replicate confidence intervals.
 """
+from collections.abc import Callable
+from typing import Any
 
-from typing import Dict, Any, List
 import numpy as np
+
+PosteriorProvider = Callable[[Any, Any, int], tuple[np.ndarray, np.ndarray]]
 
 
 class CoverageEvaluator:
-    """
-    Coverage evaluator for posterior inference.
+    def __init__(self, levels: list[float] | None = None, *,
+                 posterior_provider: PosteriorProvider | None = None):
+        self.levels = [0.5, 0.68, 0.95] if levels is None else list(levels)
+        if not self.levels or any(not np.isfinite(x) or not 0 < x <= 1 for x in self.levels):
+            raise ValueError("Coverage levels must be in (0, 1]")
+        self.posterior_provider = posterior_provider
 
-    Checks if posterior credible intervals (HPD, equal-tailed, etc.)
-    have correct coverage probabilities.
-    """
-
-    def __init__(self, levels: List[float] = None):
-        """
-        Initialize coverage evaluator.
-
-        Args:
-            levels: List of coverage levels to test (default: [0.5, 0.68, 0.95])
-        """
-        if levels is None:
-            levels = [0.50, 0.68, 0.95]
-
-        self.levels = levels
-
-    def run(
-        self,
-        model: Any,
-        test_problems: list,
-        n_samples: int = 1000,
-    ) -> Dict[str, Any]:
-        """
-        Run coverage evaluation.
-
-        Args:
-            model: Trained model
-            test_problems: List of test problems
-            n_samples: Number of posterior samples
-
-        Returns:
-            Dictionary with coverage results
-        """
-        results = {
-            "coverages": {level: [] for level in self.levels},
-            "biases": [],
-            "n_problems": len(test_problems),
-        }
-
-        for problem in test_problems:
-            problem_results = self._run_coverage_for_problem(
-                model, problem, n_samples
+    def run(self, model: Any, test_problems: list, n_samples: int = 1000) -> dict:
+        if self.posterior_provider is None:
+            raise NotImplementedError(
+                "Supply posterior_provider(model, problem, n_samples) -> (samples, theta_true). "
+                "Coverage is unavailable without real posterior samples and synthetic truth."
             )
-
-            for level in self.levels:
-                results["coverages"][level].append(
-                    problem_results["coverages"][level]
-                )
-
-            results["biases"].append(problem_results["bias"])
-
-        # Compute average coverages
-        avg_coverages = {
-            level: np.mean(values)
-            for level, values in results["coverages"].items()
-        }
-
-        results["average_coverages"] = avg_coverages
-
-        return results
-
-    def _run_coverage_for_problem(
-        self,
-        model: Any,
-        problem: Any,
-        n_samples: int,
-    ) -> Dict[str, Any]:
-        """
-        Run coverage evaluation for a single problem.
-
-        Args:
-            model: Trained model
-            problem: Test problem
-            n_samples: Number of posterior samples
-
-        Returns:
-            Coverage results for this problem
-        """
-        # Placeholder implementation
-        coverages = {level: np.random.uniform(level - 0.1, level + 0.1)
+        if not test_problems or n_samples < 2:
+            raise ValueError("Need nonempty synthetic problems and at least two samples")
+        per_problem = [self._run_coverage_for_problem(model, p, n_samples)
+                       for p in test_problems]
+        coverages = {level: [r["coverages"][level] for r in per_problem]
                      for level in self.levels}
-        bias = np.random.uniform(-0.1, 0.1)
-
         return {
             "coverages": coverages,
-            "bias": bias,
+            "biases": [r["bias"] for r in per_problem],
+            "n_problems": len(test_problems),
+            "average_coverages": {level: float(np.mean(values))
+                                  for level, values in coverages.items()},
+            "per_problem": per_problem,
+            "interval_type": "equal_tailed",
+            "aggregation": "mean of per-problem coordinate coverages",
         }
 
-    def compute_hpd_coverage(
-        self,
-        posterior_samples: np.ndarray,
-        true_value: float,
-        level: float,
-    ) -> float:
-        """
-        Compute coverage of Highest Posterior Density interval.
+    def _run_coverage_for_problem(self, model: Any, problem: Any, n_samples: int) -> dict:
+        if self.posterior_provider is None:
+            raise NotImplementedError("A real posterior_provider is required")
+        samples, truth = self.posterior_provider(model, problem, n_samples)
+        samples = np.asarray(samples, dtype=float)
+        truth = np.asarray(truth, dtype=float).reshape(-1)
+        if samples.ndim == 1 and truth.size == 1:
+            samples = samples[:, None]
+        if samples.ndim != 2 or samples.shape[1] != truth.size or truth.size == 0 or len(samples) < 2:
+            raise ValueError("samples must have shape (draws, parameters) matching theta_true")
+        if not np.all(np.isfinite(samples)) or not np.all(np.isfinite(truth)):
+            raise ValueError("Posterior samples and synthetic truth must be finite")
+        hits = {}
+        for level in self.levels:
+            alpha = (1 - level) / 2
+            lower, upper = np.quantile(samples, [alpha, 1 - alpha], axis=0)
+            hits[level] = ((truth >= lower) & (truth <= upper)).tolist()
+        return {
+            "coverages": {level: float(np.mean(values)) for level, values in hits.items()},
+            "coordinate_hits": hits,
+            "n_coordinates": int(truth.size),
+            "n_posterior_draws": int(len(samples)),
+            "bias": float(np.mean(samples.mean(axis=0) - truth)),
+        }
 
-        Args:
-            posterior_samples: Posterior samples (n_samples,)
-            true_value: True parameter value
-            level: Coverage level (e.g., 0.95)
+    @staticmethod
+    def _validate_interval(samples: np.ndarray, level: float) -> np.ndarray:
+        samples = np.asarray(samples, dtype=float)
+        if samples.ndim != 1 or len(samples) < 2 or not np.all(np.isfinite(samples)):
+            raise ValueError("Need at least two finite univariate draws")
+        if not np.isfinite(level) or not 0 < level <= 1:
+            raise ValueError("level must be in (0, 1]")
+        return samples
 
-        Returns:
-            1.0 if true value is in HPD interval, 0.0 otherwise
-        """
-        # Compute HPD interval
+    def _hpd_interval(self, samples: np.ndarray, level: float) -> tuple[float, float]:
+        ordered = np.sort(self._validate_interval(samples, level))
+        # A window of count samples has endpoint index start + count - 1.
+        count = max(2, int(np.ceil(level * len(ordered))))
+        widths = ordered[count - 1:] - ordered[:len(ordered) - count + 1]
+        start = int(np.argmin(widths))
+        return float(ordered[start]), float(ordered[start + count - 1])
+
+    def compute_hpd_coverage(self, posterior_samples: np.ndarray,
+                             true_value: float, level: float) -> float:
+        if not np.isfinite(true_value):
+            raise ValueError("true_value must be finite")
         lower, upper = self._hpd_interval(posterior_samples, level)
+        return float(lower <= true_value <= upper)
 
-        # Check if true value is in interval
-        return 1.0 if lower <= true_value <= upper else 0.0
+    def compute_equal_tailed_coverage(self, posterior_samples: np.ndarray,
+                                     true_value: float, level: float) -> float:
+        samples = self._validate_interval(posterior_samples, level)
+        if not np.isfinite(true_value):
+            raise ValueError("true_value must be finite")
+        alpha = (1 - level) / 2
+        lower, upper = np.quantile(samples, [alpha, 1 - alpha])
+        return float(lower <= true_value <= upper)
 
-    def _hpd_interval(
-        self,
-        samples: np.ndarray,
-        level: float,
-    ) -> tuple[float, float]:
-        """
-        Compute Highest Posterior Density interval.
-
-        Args:
-            samples: Posterior samples
-            level: Coverage level
-
-        Returns:
-            (lower, upper) bounds of HPD interval
-        """
-        # Sort samples
-        sorted_samples = np.sort(samples)
-        n_samples = len(sorted_samples)
-
-        # Compute interval size
-        interval_size = int(np.round(level * n_samples))
-
-        # Find shortest interval
-        min_width = np.inf
-        hpd_lower, hpd_upper = 0, 0
-
-        for i in range(n_samples - interval_size):
-            width = sorted_samples[i + interval_size] - sorted_samples[i]
-            if width < min_width:
-                min_width = width
-                hpd_lower = sorted_samples[i]
-                hpd_upper = sorted_samples[i + interval_size]
-
-        return hpd_lower, hpd_upper
-
-    def compute_equal_tailed_coverage(
-        self,
-        posterior_samples: np.ndarray,
-        true_value: float,
-        level: float,
-    ) -> float:
-        """
-        Compute coverage of equal-tailed interval.
-
-        Args:
-            posterior_samples: Posterior samples
-            true_value: True parameter value
-            level: Coverage level
-
-        Returns:
-            1.0 if true value is in interval, 0.0 otherwise
-        """
-        alpha = (1.0 - level) / 2.0
-        lower = np.percentile(posterior_samples, 100 * alpha)
-        upper = np.percentile(posterior_samples, 100 * (1 - alpha))
-
-        return 1.0 if lower <= true_value <= upper else 0.0
-
-    def plot_coverage_diagram(
-        self,
-        observed_coverages: Dict[float, List[float]],
-    ):
-        """
-        Plot coverage diagram comparing observed vs nominal coverage.
-
-        Args:
-            observed_coverages: Dict mapping levels to observed coverages
-        """
+    def plot_coverage_diagram(self, observed_coverages: dict):
         import matplotlib.pyplot as plt
 
-        levels = sorted(observed_coverages.keys())
-        observed = [np.mean(observed_coverages[l]) for l in levels]
-
-        plt.figure(figsize=(8, 6))
-
-        # Plot observed vs nominal
-        plt.plot(levels, levels, "r--", label="Nominal")
-        plt.plot(levels, observed, "bo-", label="Observed")
-
-        plt.xlabel("Nominal Coverage")
-        plt.ylabel("Observed Coverage")
-        plt.title("Coverage Calibration")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-
-        return plt.gcf()
+        nominal = sorted(observed_coverages)
+        observed = [np.mean(observed_coverages[level]) for level in nominal]
+        fig, ax = plt.subplots()
+        ax.plot(nominal, observed, "o-")
+        ax.plot([0, 1], [0, 1], "--", color="gray")
+        ax.set(xlabel="Nominal coverage", ylabel="Observed coverage", xlim=(0, 1), ylim=(0, 1))
+        return fig

@@ -1,49 +1,27 @@
-"""Frozen, prior-whitened, dimensionless FIM spectral descriptors (R0-03).
+"""Versioned dimensionless FIM descriptors.
 
-Replaces the defective 8-dim feature block (RISK-05) with a single, tested
-module.  Every descriptor is:
+Version 2.0 uses the manuscript top-3 fraction and whole-spectrum decay slope.
+For theta = mu + scale**(1/2) y, the information matrix in y coordinates is
+W = scale**(1/2) FIM scale**(1/2). This is a coordinate normalization, not
+a claim that the scale matrix equals an empirical-prior covariance.
 
-  * **dimensionless** - no dependence on parameter units or noise scale;
-  * **scale-invariant** - multiplying the FIM by a positive constant does not
-    change any descriptor;
-  * **prior/noise-aware** - computed on the prior-whitened FIM spectrum
-    ``W = prior^{-1/2} FIM prior^{-1/2}``, so the fixed ``sigma=0.1`` defect
-    is eliminated;
-  * **finite** - robust to near-zero, near-singular and indefinite FIMs.
-
-Quality flags (condition number, negative-eigenvalue mass) are returned
-separately and must NOT be used as predictors; they are diagnostic only.
-
-Frozen descriptor set (7 features, indices fixed):
-
-| idx | name                      | formula                              |
-|-----|---------------------------|--------------------------------------|
-| 0   | spectral_entropy_norm     | H / log(n),  H = -sum p_i log p_i   |
-| 1   | eff_rank_fraction         | (sum lam)^2 / (n sum lam^2)         |
-| 2   | max_log_gap               | max(-Delta log10 lam)               |
-| 3   | gap_position_norm         | argmax gap / (n-1)                  |
-| 4   | spectral_curvature        | mean(Delta^2 log10 lam_norm)        |
-| 5   | log_dynamic_range         | log10(lam_max / lam_min)            |
-| 6   | top_r_information_fraction| sum_{i<=r} lam_i / sum lam, r=ceil(n/3) |
-
-plus:
-
-| 7   | above_threshold_fraction  | frac(lam > tau * lam_max), tau=1e-2 |
-
-All 8 are returned as a vector; the caller selects which enter the Ridge via
-``ProtocolConfig.primary_descriptor_idx``.
+Version 1.0 retains the old inverse-scale convention and old final two
+features solely for explicit legacy checkpoint compatibility. Do not mix
+versions in training and evaluation. Quality flags are not predictors.
 """
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-# Fixed threshold for above_threshold_fraction (prior-whitened eigenvalues).
+# Threshold used only by legacy version 1.0.
 DEFAULT_TAU = 1e-2
 
-DESCRIPTOR_NAMES: Tuple[str, ...] = (
+FEATURE_VERSION = "2.0"
+
+LEGACY_DESCRIPTOR_NAMES: Tuple[str, ...] = (
     "spectral_entropy_norm",
     "eff_rank_fraction",
     "max_log_gap",
@@ -53,6 +31,19 @@ DESCRIPTOR_NAMES: Tuple[str, ...] = (
     "top_r_information_fraction",
     "above_threshold_fraction",
 )
+
+DESCRIPTOR_NAMES = LEGACY_DESCRIPTOR_NAMES[:6] + (
+    "top_3_information_fraction", "decay_slope",
+)
+
+def _matrix_sqrt(matrix: np.ndarray) -> np.ndarray:
+    matrix = _symmetrise(np.asarray(matrix, dtype=float))
+    values, vectors = np.linalg.eigh(matrix)
+    tolerance = 1e-12 * max(float(np.max(np.abs(values))), 1.0)
+    if np.any(values < -tolerance):
+        raise ValueError("Scale matrix must be positive semidefinite")
+    return (vectors * np.sqrt(np.maximum(values, 0.0))) @ vectors.T
+
 
 
 # --------------------------------------------------------------------------- #
@@ -75,14 +66,15 @@ def _matrix_inv_sqrt(m: np.ndarray) -> np.ndarray:
     return (vecs * inv_sqrt) @ vecs.T
 
 
-def _prior_cov_from_bounds(param_bounds_log10: np.ndarray) -> np.ndarray:
+def _prior_cov_from_bounds(param_bounds_log10: np.ndarray, *, legacy: bool = False) -> np.ndarray:
     """Diagonal uniform-prior covariance in log10 space.
 
     For a uniform prior on [lower, upper], Var = (upper - lower)^2 / 12.
     """
     bounds = np.asarray(param_bounds_log10, dtype=float)
     widths = bounds[:, 1] - bounds[:, 0]
-    widths = np.where(widths > 1e-12, widths, 1.0)  # guard zero-width
+    if legacy:
+        widths = np.where(widths > 1e-12, widths, 1.0)  # explicit old convention
     return np.diag(widths ** 2 / 12.0)
 
 
@@ -90,8 +82,9 @@ def _whitened_eigenvalues(
     fim: np.ndarray,
     prior_cov: Optional[np.ndarray] = None,
     param_bounds_log10: Optional[np.ndarray] = None,
+    feature_version: str = FEATURE_VERSION,
 ) -> Tuple[np.ndarray, bool, float]:
-    """Compute eigenvalues of the (optionally prior-whitened) FIM.
+    """Compute eigenvalues under the explicitly versioned FIM scale transform.
 
     Returns (eigenvalues_descending, whitened_flag, negative_eigenvalue_mass).
     """
@@ -99,13 +92,14 @@ def _whitened_eigenvalues(
     whitened = False
 
     if prior_cov is not None:
-        pinv_sqrt = _matrix_inv_sqrt(prior_cov)
-        W = _symmetrise(pinv_sqrt @ fim @ pinv_sqrt)
+        scale_transform = (_matrix_inv_sqrt(prior_cov) if feature_version == "1.0"
+                     else _matrix_sqrt(prior_cov))
+        W = _symmetrise(scale_transform @ fim @ scale_transform)
         whitened = True
     elif param_bounds_log10 is not None:
-        prior_cov = _prior_cov_from_bounds(param_bounds_log10)
-        pinv_sqrt = _matrix_inv_sqrt(prior_cov)
-        W = _symmetrise(pinv_sqrt @ fim @ pinv_sqrt)
+        prior_cov = _prior_cov_from_bounds(param_bounds_log10, legacy=feature_version == "1.0")
+        scale_transform = _matrix_inv_sqrt(prior_cov)
+        W = _symmetrise(scale_transform @ fim @ scale_transform)
         whitened = True
     else:
         W = fim
@@ -131,8 +125,9 @@ def compute_fim_descriptors(
     prior_cov: Optional[np.ndarray] = None,
     param_bounds_log10: Optional[np.ndarray] = None,
     tau: float = DEFAULT_TAU,
+    *, feature_version: str = FEATURE_VERSION,
 ) -> Dict[str, Any]:
-    """Compute the frozen 8-dim prior-whitened FIM spectral descriptor vector.
+    """Compute the versioned 8-dimensional FIM spectral descriptor vector.
 
     Parameters
     ----------
@@ -140,12 +135,16 @@ def compute_fim_descriptors(
         Fisher Information Matrix (symmetric).
     prior_cov : (d, d) array, optional
         Prior covariance matrix.  If provided, the FIM is whitened as
-        ``W = prior^{-1/2} FIM prior^{-1/2}`` before descriptor extraction.
+        ``W = scale^{1/2} FIM scale^{1/2}`` in version 2.0.
+        The API name is retained for compatibility; this may be a bound scale.
     param_bounds_log10 : (d, 2) array, optional
         Per-parameter (lower, upper) bounds in log10 space.  Used to build a
         diagonal uniform-prior covariance if ``prior_cov`` is None.
     tau : float
-        Fixed threshold for ``above_threshold_fraction`` (default 1e-2).
+        Threshold used only by the explicit legacy version 1.0.
+    feature_version : str
+        "2.0" (default) or "1.0" for legacy feature/checkpoint compatibility.
+        Serialize this value with every fitted Ridge model.
 
     Returns
     -------
@@ -156,7 +155,21 @@ def compute_fim_descriptors(
                           whitened, n_params) - diagnostic only, not predictors
         ``eigenvalues`` : (d,) array of (clipped) whitened eigenvalues descending
     """
-    eigs, whitened, neg_mass = _whitened_eigenvalues(fim, prior_cov, param_bounds_log10)
+    if feature_version not in {"1.0", "2.0"}:
+        raise ValueError("Unknown FIM descriptor feature_version")
+    names = LEGACY_DESCRIPTOR_NAMES if feature_version == "1.0" else DESCRIPTOR_NAMES
+    fim = np.asarray(fim, dtype=float)
+    if fim.ndim != 2 or fim.shape[0] != fim.shape[1] or not np.all(np.isfinite(fim)):
+        raise ValueError("FIM must be a finite square matrix")
+    if prior_cov is not None:
+        prior_cov = np.asarray(prior_cov, dtype=float)
+        if prior_cov.shape != fim.shape or not np.all(np.isfinite(prior_cov)):
+            raise ValueError("Scale matrix must be finite and match the FIM")
+    if param_bounds_log10 is not None:
+        bounds = np.asarray(param_bounds_log10, dtype=float)
+        if bounds.shape != (len(fim), 2) or not np.all(np.isfinite(bounds)) or np.any(bounds[:, 1] <= bounds[:, 0]):
+            raise ValueError("Bounds must be finite ordered intervals matching the FIM")
+    eigs, whitened, neg_mass = _whitened_eigenvalues(fim, prior_cov, param_bounds_log10, feature_version)
     n = len(eigs)
     d = fim.shape[0]
 
@@ -165,7 +178,8 @@ def compute_fim_descriptors(
     if total <= 0 or n == 0:
         return {
             "descriptors": np.zeros(len(DESCRIPTOR_NAMES)),
-            "names": DESCRIPTOR_NAMES,
+            "names": names,
+            "feature_version": feature_version,
             "quality_flags": {
                 "condition_number": float("inf"),
                 "negative_eigenvalue_mass": neg_mass,
@@ -195,6 +209,9 @@ def compute_fim_descriptors(
     # 2-4: Log10 spectral gaps and curvature
     # ------------------------------------------------------------------ #
     log_eigs = np.log10(np.maximum(eigs, 1e-300))
+    if feature_version == "2.0":
+        # Relative clipping preserves scale invariance for zero eigenvalues.
+        log_eigs = np.log10(np.maximum(eigs / eigs[0], 1e-300))
     log_eigs_norm = log_eigs - log_eigs[0]  # normalise max to 0
 
     if n > 1:
@@ -216,19 +233,24 @@ def compute_fim_descriptors(
     # ------------------------------------------------------------------ #
     lam_min = float(eigs[eigs > 0].min()) if np.any(eigs > 0) else 1e-300
     lam_max = float(eigs[0])
-    log_range = math.log10(max(lam_max / max(lam_min, 1e-300), 1.0))
+    log_range = max(math.log10(lam_max) - math.log10(max(lam_min, 1e-300)), 0.0)
 
     # ------------------------------------------------------------------ #
-    # 6: Top-r information fraction  (r = ceil(n/3))
+    # Final two features are selected by explicit feature version.
     # ------------------------------------------------------------------ #
     r = max(1, math.ceil(n / 3))
-    top_r_frac = float(eigs[:r].sum() / total)
+    information_fraction = float(eigs[:r].sum() / total)
 
     # ------------------------------------------------------------------ #
     # 7: Above-threshold fraction  (tau * max eigenvalue)
     # ------------------------------------------------------------------ #
     threshold = tau * lam_max
-    above_frac = float(np.mean(eigs > threshold))
+    final_feature = float(np.mean(eigs > threshold))
+    if feature_version == "2.0":
+        information_fraction = float(eigs[:min(3, n)].sum() / total)
+        index = np.arange(1, n + 1, dtype=float)
+        centered = index - index.mean()
+        final_feature = float(-np.dot(centered, log_eigs) / np.dot(centered, centered)) if n > 1 else 0.0
 
     descriptors = np.array([
         entropy_norm,
@@ -237,8 +259,8 @@ def compute_fim_descriptors(
         gap_pos,
         curvature,
         log_range,
-        top_r_frac,
-        above_frac,
+        information_fraction,
+        final_feature,
     ])
 
     # Quality flags (diagnostic only - must NOT enter the Ridge)
@@ -252,7 +274,8 @@ def compute_fim_descriptors(
 
     return {
         "descriptors": descriptors,
-        "names": DESCRIPTOR_NAMES,
+        "names": names,
+        "feature_version": feature_version,
         "quality_flags": quality_flags,
         "eigenvalues": eigs,
     }
