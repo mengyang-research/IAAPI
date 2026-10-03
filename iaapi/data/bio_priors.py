@@ -77,14 +77,11 @@ class BioPriorLoader:
         Returns:
             Sampled parameter vectors (n_samples, n_params)
         """
-        # This is a simplified version
-        # In a full implementation, would match parameter names to types
-        # and sample from appropriate distributions
-
-        n_params = len(petab_problem.parameters)
-        samples = np.random.randn(n_samples, n_params)
-
-        return samples
+        raise NotImplementedError(
+            "Problem-level biological sampling requires an explicit parameter-to-type "
+            "mapping, declared bounds and estimation-coordinate transform. "
+            "Use sample_from_distribution for an explicitly specified parameter type."
+        )
 
     def sample_from_distribution(
         self,
