@@ -1,4 +1,4 @@
-"""Regression checks for scientific-data integrity; no manuscript data is altered."""
+"""Regression checks for scientific-data handling; no manuscript data is altered."""
 import json
 from types import SimpleNamespace
 

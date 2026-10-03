@@ -1,4 +1,4 @@
-"""Evidence-integrity audit for profile-likelihood ground-truth artifacts.
+"""Consistency audit for profile-likelihood ground-truth artifacts.
 
 Scientific targets are emitted only for models whose parameters were classified
 by converged profile-likelihood optimizations. Timeouts and simulator failures are

@@ -1,6 +1,6 @@
-"""Tests for the real SBC evaluator (no fabricated random results).
+"""Tests for the real SBC evaluator (no random placeholder results).
 
-Covers the three acceptance criteria from the review:
+Covers the three acceptance criteria:
   1. calibrated model -> near-uniform ranks (small KS);
   2. deliberately biased model -> stably fails (large KS, small p);
   3. fixed seed -> exactly reproducible ranks.

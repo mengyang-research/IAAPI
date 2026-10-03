@@ -101,7 +101,7 @@ class SBCEvaluator:
         if simulator is None or prior_sampler is None:
             raise ValueError(
                 "SBC requires a simulator and a prior_sampler; the public "
-                "placeholder implementation that fabricates random ranks has "
+                "placeholder implementation that generated random ranks has "
                 "been removed."
             )
 
