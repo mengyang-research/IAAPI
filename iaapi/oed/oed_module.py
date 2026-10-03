@@ -5,7 +5,7 @@ Suggests experiments that maximize information gain about
 poorly constrained parameter directions.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Callable, Optional
 import numpy as np
 
 
@@ -17,9 +17,11 @@ class OEDModule:
     the sloppy (poorly constrained) subspace.
     """
 
-    def __init__(self):
-        """Initialize OED module."""
-        pass
+    def __init__(self, information_gain_fn: Optional[Callable] = None, *,
+                 observable_ids: Optional[List[Any]] = None):
+        """Inject a validated, higher-is-better utility; no random scoring fallback."""
+        self.information_gain_fn = information_gain_fn
+        self.observable_ids = None if observable_ids is None else list(observable_ids)
 
     def rank_experiments(
         self,
@@ -40,6 +42,8 @@ class OEDModule:
         Returns:
             Dictionary with ranked experiments and information gains
         """
+        if not candidate_experiments:
+            raise ValueError("Provide a nonempty, protocol-defined candidate set")
         # Get sloppy subspace
         U_perp = isp_output.sloppy_subspace  # (n_params, n_perp)
 
@@ -84,13 +88,16 @@ class OEDModule:
         Returns:
             Information gain in sloppy subspace
         """
-        # Simulate with new experiment
-        # Compute FIM for new experiment
-        # Project onto sloppy subspace
-        # Compute trace as information gain
-
-        # Placeholder implementation
-        return np.random.uniform(0, 1)
+        if self.information_gain_fn is None:
+            raise NotImplementedError(
+                "Supply a validated information_gain_fn(basis, theta, experiment, simulator); "
+                "random OED scores are disabled. For expected posterior variance, use its "
+                "negative as a higher-is-better utility."
+            )
+        gain = float(self.information_gain_fn(U_perp, current_theta, experiment, simulator))
+        if not np.isfinite(gain):
+            raise ValueError("Design utility must be finite")
+        return gain
 
     def suggest_next_experiment(
         self,
@@ -152,6 +159,10 @@ class OEDModule:
         Returns:
             List of candidate experiments
         """
+        if strategy != "random":
+            raise NotImplementedError("Provide explicit candidates for this design strategy")
+        if n_candidates < 1 or not self.observable_ids:
+            raise ValueError("Random candidate generation requires n_candidates >= 1 and explicit observable_ids")
         candidates = []
 
         if strategy == "random":
@@ -160,8 +171,8 @@ class OEDModule:
                 candidates.append({
                     "time_points": np.sort(np.random.uniform(0, 100, 10)),
                     "observables": np.random.choice(
-                        list(range(current_theta.shape[0])),
-                        size=5,
+                        self.observable_ids,
+                        size=min(5, len(self.observable_ids)),
                         replace=False,
                     ),
                     "conditions": {},
