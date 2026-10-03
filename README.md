@@ -6,15 +6,6 @@ The project is intended for researchers who use mechanistic ODEs in systems biol
 
 > **Release status:** research preview (`0.1.0`). The model architecture, training code, inference API, diagnostics, and examples are public. Pretrained weights are not bundled with this release, so neural inference requires a compatible checkpoint trained by the user.
 
-## Scientific integrity and compatibility
-
-See [scientific integrity fixes](docs/scientific_integrity_fixes.md) for corrected
-MCMC summaries, frozen holdout evaluation, versioned FIM descriptors, and removal
-of random scientific-result fallbacks. The legacy public training generator still
-requires the author's MAP-input and PEtab-noise implementation before it can
-reproduce those manuscript protocols. Historical figure CSVs and experiments
-are not validated or changed by these code fixes.
-
 ## What is included
 
 - PEtab/SBML loading and graph construction.
@@ -159,7 +150,7 @@ tests/                unit and smoke tests
 
 ## Scope and scientific status
 
-IAAPI is a research toolkit, not a clinical or safety-critical inference system. Cross-model generalization and prospective experimental-design performance remain active research topics. The public package deliberately does not present incomplete manuscript experiments as established results.
+IAAPI is a research toolkit, not a clinical or safety-critical inference system. Cross-model generalization and prospective experimental-design performance remain active research topics.
 
 For a new domain, begin with the array-based diagnostic and posterior components. PEtab/SBML users can additionally use the full ingestion and graph path. Contributions that add simulator adapters or domain-specific examples are welcome.
 
