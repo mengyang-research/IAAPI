@@ -51,6 +51,8 @@ def test_gaussian_converges_and_recovers_mean():
     assert max(r.rhat) < 1.05
     assert min(r.ess_bulk) > 100
     assert r.n_ensembles == 4
+    assert r.n_samples == 4 * 32 * 2000
+    np.testing.assert_allclose(np.diag(r.posterior_cov), np.square(sigma), rtol=0.15)
 
 
 def test_unconverged_low_ess_excluded():

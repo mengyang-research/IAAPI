@@ -4,8 +4,7 @@ Baseline method runners for comparison.
 Implements baseline parameter inference methods for comparison.
 """
 
-from typing import Dict, Any
-import numpy as np
+from typing import Dict, Any, List
 
 
 class BaselineRunner:
@@ -74,14 +73,10 @@ class BaselineRunner:
         Returns:
             Optimization results
         """
-        # Placeholder implementation
-        return {
-            "method": "pyPESTO optimization",
-            "n_starts": n_starts,
-            "optimal_parameters": np.random.randn(10),
-            "optimal_cost": np.random.uniform(0, 100),
-            "wall_time": np.random.uniform(10, 100),
-        }
+        raise NotImplementedError(
+            "run_pypesto_optimization has no production adapter in this public preview. "
+            "Use a validated backend and record its configuration; random outputs are disabled."
+        )
 
     def run_pypesto_optimization_batch(
         self,
@@ -110,15 +105,10 @@ class BaselineRunner:
         Returns:
             MCMC results
         """
-        # Placeholder implementation
-        return {
-            "method": "pyPESTO MCMC",
-            "n_chains": n_chains,
-            "n_steps": n_steps,
-            "posterior_samples": np.random.randn(1000, 10),
-            "r_hat": np.random.uniform(1.0, 1.05),
-            "wall_time": np.random.uniform(100, 1000),
-        }
+        raise NotImplementedError(
+            "run_pypesto_mcmc has no production adapter in this public preview. "
+            "Use a validated backend and record its configuration; random outputs are disabled."
+        )
 
     def run_pypesto_mcmc_batch(
         self,
@@ -143,13 +133,10 @@ class BaselineRunner:
         Returns:
             Profile likelihood results
         """
-        # Placeholder implementation
-        return {
-            "method": "pyPESTO profile likelihood",
-            "profiles": {f"param_{i}": np.random.randn(100)
-                       for i in range(10)},
-            "wall_time": np.random.uniform(50, 200),
-        }
+        raise NotImplementedError(
+            "run_pypesto_profile has no production adapter in this public preview. "
+            "Use a validated backend and record its configuration; random outputs are disabled."
+        )
 
     def run_pypesto_profile_batch(
         self,
@@ -176,13 +163,10 @@ class BaselineRunner:
         Returns:
             NPE results
         """
-        # Placeholder implementation
-        return {
-            "method": "SBI NPE-C",
-            "n_samples": n_samples,
-            "posterior_samples": np.random.randn(n_samples, 10),
-            "wall_time": np.random.uniform(1, 10),
-        }
+        raise NotImplementedError(
+            "run_sbi_npe has no production adapter in this public preview. "
+            "Use a validated backend and record its configuration; random outputs are disabled."
+        )
 
     def run_sbi_npe_batch(
         self,
@@ -209,13 +193,10 @@ class BaselineRunner:
         Returns:
             BayesFlow results
         """
-        # Placeholder implementation
-        return {
-            "method": "BayesFlow",
-            "n_samples": n_samples,
-            "posterior_samples": np.random.randn(n_samples, 10),
-            "wall_time": np.random.uniform(0.1, 1),
-        }
+        raise NotImplementedError(
+            "run_bayesflow has no production adapter in this public preview. "
+            "Use a validated backend and record its configuration; random outputs are disabled."
+        )
 
     def run_bayesflow_batch(
         self,

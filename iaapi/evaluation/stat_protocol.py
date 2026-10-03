@@ -30,13 +30,14 @@ R0-02 fixes (2026-07-11):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from functools import lru_cache
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "3.0"
 
 # Default pre-registered primary spectral descriptors (names only; indices are
 # supplied at call time via ProtocolConfig.primary_descriptor_idx). Frozen.
@@ -67,32 +68,58 @@ def _standardise(X: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray
     return (X - mean) / std
 
 
+@dataclass(frozen=True)
+class FittedRidge:
+    """Training-only scaler, intercept and coefficients frozen before testing."""
+    mean: np.ndarray
+    std: np.ndarray
+    beta: np.ndarray
+    intercept: float
+    alpha: float
+    primary_descriptor_idx: tuple[int, ...]
+    training_model_ids: tuple[str, ...] = ()
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or not np.all(np.isfinite(X)):
+            raise ValueError("X must be a finite feature matrix")
+        Xp = X[:, self.primary_descriptor_idx]
+        return _standardise(Xp, self.mean, self.std) @ self.beta + self.intercept
+
+
+def fit_ridge(X_train: np.ndarray, y_train: np.ndarray, alpha: float,
+              primary_descriptor_idx: Sequence[int] | None = None,
+              training_model_ids: Sequence[str] | None = None) -> FittedRidge:
+    """Fit using training data only; select alpha in training CV beforehand."""
+    X = np.asarray(X_train, dtype=float)
+    y = np.asarray(y_train, dtype=float).reshape(-1)
+    if X.ndim != 2 or len(X) != len(y) or len(y) < 2:
+        raise ValueError("Need matching training features/targets with at least two rows")
+    if not np.all(np.isfinite(X)) or not np.all(np.isfinite(y)) or not np.isfinite(alpha) or alpha < 0:
+        raise ValueError("Training data must be finite and alpha nonnegative")
+    idx = tuple(range(X.shape[1])) if primary_descriptor_idx is None else tuple(primary_descriptor_idx)
+    if not idx or len(set(idx)) != len(idx) or any(i < 0 or i >= X.shape[1] for i in idx):
+        raise ValueError("Descriptor indices must be nonempty, unique, and in range")
+    ids = () if training_model_ids is None else tuple(training_model_ids)
+    if ids and (len(ids) != len(y) or len(set(ids)) != len(ids)):
+        raise ValueError("Training model IDs must be unique and match the row count")
+    Xp = X[:, idx]
+    mean, std = Xp.mean(axis=0), Xp.std(axis=0)
+    Xs = _standardise(Xp, mean, std)
+    intercept = float(y.mean())
+    beta = np.linalg.solve(Xs.T @ Xs + alpha * np.eye(len(idx)),
+                           Xs.T @ (y - intercept))
+    for array in (mean, std, beta):
+        array.setflags(write=False)
+    return FittedRidge(mean, std, beta, intercept, float(alpha), idx, ids)
+
+
 def ridge_fit_predict(X_train: np.ndarray, y_train: np.ndarray,
                       X_test: np.ndarray, alpha: float,
                       return_intercept: bool = False) -> Any:
-    """Standardised Ridge regression with intercept; returns predictions for X_test.
-
-    The intercept is recovered by centring y before fitting on standardised X
-    (which has zero column means), so intercept = y_mean.  This fixes the
-    RISK-04 bug where positive-count targets received biased, intercept-free
-    predictions.
-    """
-    Xtr = np.asarray(X_train, dtype=float)
-    ytr = np.asarray(y_train, dtype=float).reshape(-1)
-    mean = Xtr.mean(axis=0)
-    std = Xtr.std(axis=0)
-    Xs = _standardise(Xtr, mean, std)
-    # Centre y so the intercept is y_mean (Xs has zero column means).
-    y_mean = ytr.mean()
-    yc = ytr - y_mean
-    d = Xs.shape[1]
-    A = Xs.T @ Xs + alpha * np.eye(d)
-    beta = np.linalg.solve(A, Xs.T @ yc)
-    Xte = _standardise(np.asarray(X_test, dtype=float), mean, std)
-    pred = Xte @ beta + y_mean
-    if return_intercept:
-        return pred, float(y_mean)
-    return pred
+    fitted = fit_ridge(X_train, y_train, alpha)
+    pred = fitted.predict(X_test)
+    return (pred, fitted.intercept) if return_intercept else pred
 
 
 # --------------------------------------------------------------------------- #
@@ -103,32 +130,33 @@ def _loo_indices(n: int) -> List[Tuple[np.ndarray, np.ndarray]]:
     return [(np.delete(idx, i), np.array([i])) for i in idx]
 
 
-def _ridge_loo_mse(X: np.ndarray, y: np.ndarray, alpha: float) -> float:
-    """Aggregate LOO MSE for standardised Ridge via the analytical hat matrix.
+@lru_cache(maxsize=512)
+def _loo_operator(shape: tuple[int, int], data: bytes, alpha: float) -> np.ndarray:
+    """Linear prediction weights, with a separate scaler/intercept per fold."""
+    X = np.frombuffer(data, dtype=np.float64).reshape(shape)
+    n, d = shape
+    operator = np.zeros((n, n))
+    for train, test in _loo_indices(n):
+        mean, std = X[train].mean(axis=0), X[train].std(axis=0)
+        Xs = _standardise(X[train], mean, std)
+        Xte = _standardise(X[test], mean, std)
+        weights = Xte @ np.linalg.solve(Xs.T @ Xs + alpha * np.eye(d), Xs.T)
+        # y centering and its training-only intercept are both in these weights.
+        operator[test[0], train] = weights[0] - weights[0].sum() / len(train) + 1.0 / len(train)
+    operator.setflags(write=False)
+    return operator
 
-    For Ridge with standardised X and centred y, the LOO residual for sample i
-    is (y_i - ŷ_i) / (1 - H_ii) where ŷ_i is the in-sample prediction and
-    H = Xs (Xs^T Xs + alpha I)^{-1} Xs^T is the hat matrix.  This avoids
-    refitting n times and is exact (not an approximation).
+
+def _ridge_loo_mse(X: np.ndarray, y: np.ndarray, alpha: float) -> float:
+    """LOO MSE with preprocessing fitted inside each training fold.
+
+    Cache only X-dependent linear weights, never labels or full-data scalers.
+    This is algebraically identical to refitting Ridge in every fold.
     """
-    Xtr = np.asarray(X, dtype=float)
-    ytr = np.asarray(y, dtype=float).reshape(-1)
-    mean = Xtr.mean(axis=0)
-    std = Xtr.std(axis=0)
-    Xs = _standardise(Xtr, mean, std)
-    yc = ytr - ytr.mean()
-    d = Xs.shape[1]
-    A = Xs.T @ Xs + alpha * np.eye(d)
-    A_inv = np.linalg.inv(A)
-    # In-sample predictions on centred y: ŷ = Xs @ beta = H @ yc
-    pred = Xs @ (A_inv @ (Xs.T @ yc))
-    resid = yc - pred
-    # Diagonal of hat matrix: H_ii = sum_j Xs[i,j] * (A_inv Xs^T)[j, i]
-    H_diag = np.einsum("ij,jk,ik->i", Xs, A_inv, Xs)
-    denom = 1.0 - H_diag
-    denom = np.where(np.abs(denom) > 1e-12, denom, 1e-12)
-    loo_resid = resid / denom
-    return float(np.mean(loo_resid ** 2))
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    predictions = _loo_operator(X.shape, X.tobytes(), float(alpha)) @ y
+    return float(np.mean((y - predictions) ** 2))
 
 
 def inner_select_alpha(X: np.ndarray, y: np.ndarray, alphas: Sequence[float]) -> float:
@@ -137,7 +165,7 @@ def inner_select_alpha(X: np.ndarray, y: np.ndarray, alphas: Sequence[float]) ->
     This fixes RISK-04: the old implementation computed Pearson r on one
     held-out scalar at a time, whose variance is zero, so no alpha received a
     valid score and the first grid value was always returned.  The corrected
-    implementation uses the analytical hat-matrix LOO residual to compute an
+    implementation refits scaling and regression in each fold to compute an
     aggregate MSE for each alpha, which is well-defined for any n >= 2.
     Ties are broken by preferring the larger alpha (more regularisation).
     """
@@ -323,30 +351,50 @@ def evaluate_gate(result: Dict[str, Any], config: ProtocolConfig) -> Dict[str, A
 # Sealed holdout (evaluate once)
 # --------------------------------------------------------------------------- #
 class SealedHoldout:
-    """A sealed holdout that may be evaluated at most ONCE.
+    """Evaluate an already fitted predictor once, without fitting on test labels."""
 
-    Guards against repeated evaluation / optimisation against the holdout.
-    """
-
-    def __init__(self, X: np.ndarray, y: np.ndarray, primary_descriptor_idx: Sequence[int]):
-        self.X = np.asarray(X, dtype=float)[:, list(primary_descriptor_idx)]
-        self.y = np.asarray(y, dtype=float).reshape(-1)
+    def __init__(self, X: np.ndarray, y: np.ndarray,
+                 primary_descriptor_idx: Sequence[int] | None = None, *,
+                 predictor: FittedRidge, model_ids: Sequence[str] | None = None):
+        self.X = np.asarray(X, dtype=float).copy()
+        self.y = np.asarray(y, dtype=float).reshape(-1).copy()
+        if self.X.ndim != 2 or len(self.X) != len(self.y) or len(self.y) < 2:
+            raise ValueError("Holdout needs matching features/targets and at least two models")
+        if not np.all(np.isfinite(self.X)) or not np.all(np.isfinite(self.y)):
+            raise ValueError("Holdout data must be finite")
+        if primary_descriptor_idx is not None and tuple(primary_descriptor_idx) != predictor.primary_descriptor_idx:
+            raise ValueError("Holdout descriptors must match the frozen predictor")
+        ids = () if model_ids is None else tuple(model_ids)
+        if ids and (len(ids) != len(self.y) or len(set(ids)) != len(ids)):
+            raise ValueError("Holdout model IDs must be unique and match the row count")
+        if set(ids) & set(predictor.training_model_ids):
+            raise ValueError("Training and holdout model IDs overlap")
+        self.X.setflags(write=False)
+        self.y.setflags(write=False)
+        self.predictor = predictor
+        self.model_ids = ids
         self._evaluated = False
         self.result: Optional[Dict[str, Any]] = None
 
-    def evaluate_once(self, alpha: float) -> Dict[str, Any]:
+    def evaluate_once(self) -> Dict[str, Any]:
         if self._evaluated:
             raise RuntimeError("sealed holdout already evaluated; repeated evaluation is forbidden")
+        # Predictions are produced by the frozen training-only model.
+        preds = self.predictor.predict(self.X)
         self._evaluated = True
-        # Train on the sealed set's own Ridge at the frozen alpha (no inner
-        # selection on the holdout); report in-sample r as the one-shot figure.
-        preds = ridge_fit_predict(self.X, self.y, self.X, alpha)
         if np.std(preds) > 0 and np.std(self.y) > 0:
             r, p = pearsonr(preds, self.y)
             rho, _ = spearmanr(preds, self.y)
         else:
             r = rho = 0.0
             p = 1.0
-        self.result = {"pearson_r": float(r), "spearman_rho": float(rho),
-                       "pearson_p": float(p), "alpha": float(alpha), "evaluated": True}
+        self.result = {
+            "schema_version": SCHEMA_VERSION,
+            "pearson_r": float(r), "spearman_rho": float(rho),
+            "pearson_p": float(p), "alpha": self.predictor.alpha,
+            "predictions": preds.tolist(), "truth": self.y.tolist(),
+            "model_ids": list(self.model_ids),
+            "model_id_disjointness_checked": bool(self.model_ids and self.predictor.training_model_ids),
+            "evaluated": True, "fit_on_holdout": False,
+        }
         return self.result

@@ -33,7 +33,7 @@ except ImportError as e:  # pragma: no cover
 
 from iaapi.evaluation.targets import whiten_covariance
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
 CONVERGED = "CONVERGED"
 UNCONVERGED = "UNCONVERGED"
 
@@ -74,6 +74,8 @@ class MCMCResult:
     label_allowed: bool = False
     excluded_by_rule: str = ""
     elapsed_s: float = 0.0
+    diagnostic_method: str = "worst_walker_across_independent_ensembles"
+    diagnostic_samples_per_walker: int = 0
 
 
 LogPostFn = Callable[[np.ndarray], float]
@@ -83,115 +85,144 @@ LogPostFn = Callable[[np.ndarray], float]
 # Diagnostics (rank-normalized, per Vehtari et al. 2021)
 # --------------------------------------------------------------------------- #
 def _rank_normalize(chains: np.ndarray) -> np.ndarray:
-    """Rank-normalize each chain: u = (rank + U(0,1)) / (n+1), then z = Phi^-1(u).
+    """Pool ranks across chains; separate per-chain ranks hide location shifts."""
+    from scipy import stats
 
-    chains: (n_chains, n_steps, n_param) -> same shape, marginally Gaussian.
-    """
     chains = np.asarray(chains, dtype=float)
-    from scipy import stats as _stats
-
-    n_chains, n_steps, d = chains.shape
     out = np.empty_like(chains)
-    for c in range(n_chains):
-        for k in range(d):
-            x = chains[c, :, k]
-            ranks = _stats.rankdata(x, method="average")  # ties -> average rank
-            u = (ranks - 0.5) / n_steps
-            u = np.clip(u, 1e-12, 1 - 1e-12)
-            out[c, :, k] = _stats.norm.ppf(u)
+    for k in range(chains.shape[2]):
+        ranks = stats.rankdata(chains[:, :, k].reshape(-1), method="average")
+        u = (ranks - 0.375) / (ranks.size + 0.25)
+        out[:, :, k] = stats.norm.ppf(u).reshape(chains.shape[:2])
     return out
 
 
-def split_rhat(chains: np.ndarray) -> np.ndarray:
-    """Rank-normalized split-R-hat per parameter on *independent ensembles*.
-
-    chains: (n_chains, n_steps, n_param) where n_chains are independent
-    ensembles (walkers within one ensemble are NOT treated as independent).
-    """
-    from scipy import stats as _stats
-
+def _split_chains(chains: np.ndarray) -> np.ndarray:
     chains = np.asarray(chains, dtype=float)
-    n_c, n_s, d = chains.shape
-    if n_c < 4:
+    if chains.ndim != 3 or not np.all(np.isfinite(chains)):
+        raise ValueError("chains must be finite (independent_chains, steps, parameters)")
+    half = chains.shape[1] // 2
+    return np.concatenate([chains[:, :half], chains[:, half:2 * half]], axis=0)
+
+
+def _basic_rhat(chains: np.ndarray) -> np.ndarray:
+    m, n, d = chains.shape
+    if m < 2 or n < 2:
         return np.full(d, np.nan)
-    half = n_s // 2
-    if half < 2:
-        return np.full(d, np.nan)
-    # split each chain into first/second half -> (2*n_c, half, d)
-    split = np.concatenate([chains[:, :half, :], chains[:, half:2 * half, :]], axis=0)
-    m, n = split.shape[0], half
-    z = _rank_normalize(split)
-    means = z.mean(axis=1)  # (m, d)
-    B = n * means.var(axis=0, ddof=1)
-    W = z.var(axis=1, ddof=1).mean(axis=0)
-    W = np.where(W > 0, W, 1e-300)
-    var_hat = (n - 1) / n * W + B / n
-    return np.sqrt(var_hat / W)
+    within = chains.var(axis=1, ddof=1).mean(axis=0)
+    between = n * chains.mean(axis=1).var(axis=0, ddof=1)
+    var_plus = (n - 1) / n * within + between / n
+    result = np.full(d, np.inf)
+    np.sqrt(np.divide(var_plus, within, out=np.full(d, np.inf),
+                      where=within > 0), out=result)
+    return result
+
+
+def split_rhat(chains: np.ndarray) -> np.ndarray:
+    """Maximum of rank-normalized and folded split R-hat (Vehtari et al.).
+
+    Input chains must be independent. Walkers in one emcee ensemble are
+    dependent and must not be stacked as independent chains.
+    """
+    chains = np.asarray(chains, dtype=float)
+    split = _split_chains(chains)
+    if chains.shape[0] < 2 or split.shape[1] < 2:
+        return np.full(chains.shape[2], np.nan)
+    location = _basic_rhat(_rank_normalize(split))
+    medians = np.median(split, axis=(0, 1))
+    scale = _basic_rhat(_rank_normalize(np.abs(split - medians)))
+    return np.maximum(location, scale)
+
+
+def _autocov(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    centered = x - x.mean()
+    f = np.fft.fft(centered, n=2 * n)
+    return np.fft.ifft(f * np.conjugate(f))[:n].real / n
 
 
 def _autocorr(x: np.ndarray) -> np.ndarray:
-    """Normalized autocorrelation of a 1D series via FFT."""
-    x = np.asarray(x, dtype=float)
-    n = len(x)
-    x = x - x.mean()
-    if np.allclose(x, 0) or n < 2:
-        return np.zeros(n)
-    f = np.fft.fft(x, n=2 * n)
-    acf = np.fft.ifft(f * np.conjugate(f))[:n].real
-    acf /= acf[0]
-    return acf
+    acov = _autocov(x)
+    return acov / acov[0] if acov[0] > 0 else np.full(len(x), np.nan)
 
 
 def _geyer_tau(rho: np.ndarray) -> float:
-    """Geyer initial-positive-sequence autocorrelation time from an ACF."""
-    n = len(rho)
-    tau = 1.0
-    t = 1
-    while t + 1 < n:
-        pair = rho[t] + rho[t + 1]
-        if pair < 0:
+    """Initial positive, monotone sequence; conservative cap at tau >= 1."""
+    pairs = []
+    for t in range(0, len(rho) - 1, 2):
+        pair = float(rho[t] + rho[t + 1])
+        if not np.isfinite(pair):
+            return np.inf
+        if pair <= 0:
             break
-        tau += 2.0 * pair
-        t += 2
-    return max(tau, 1.0)
+        pairs.append(min(pair, pairs[-1]) if pairs else pair)
+    return max(-1.0 + 2.0 * sum(pairs), 1.0)
 
 
-def _ess_from_chains(chains: np.ndarray, frac: float = 1.0) -> np.ndarray:
-    """ESS per parameter from (n_chains, n_steps, n_param) using the last
-    ``frac`` fraction of each chain (frac=1 bulk, frac=0.5 tail)."""
-    chains = np.asarray(chains, dtype=float)
-    m, n, d = chains.shape
-    keep = max(1, int(n * frac))
-    sub = chains[:, -keep:, :]
-    ess = np.empty(d)
+def _ess_from_chains(chains: np.ndarray) -> np.ndarray:
+    """Split-chain ESS including between-chain variance."""
+    split = _split_chains(chains)
+    m, n, d = split.shape
+    if m < 2 or n < 2:
+        return np.zeros(d)
+    ess = np.zeros(d)
     for k in range(d):
-        acfs = np.array([_autocorr(sub[c, :, k]) for c in range(m)])
-        rho = acfs.mean(axis=0)
-        tau = _geyer_tau(rho)
-        ess[k] = m * keep / tau
+        x = split[:, :, k]
+        within = x.var(axis=1, ddof=1).mean()
+        var_plus = (n - 1) / n * within + x.mean(axis=1).var(ddof=1)
+        if var_plus <= 0 or not np.isfinite(var_plus):
+            continue
+        mean_acov = np.mean([_autocov(row) for row in x], axis=0)
+        rho = 1.0 - (within - mean_acov) / var_plus
+        rho[0] = 1.0
+        ess[k] = min(m * n / _geyer_tau(rho), float(m * n))
     return ess
 
 
 def effective_sample_size(chains: np.ndarray) -> np.ndarray:
-    """Bulk ESS per parameter (Geyer initial-positive-sequence)."""
-    return _ess_from_chains(chains, frac=1.0)
+    """Bulk ESS of pooled rank-normalized draws."""
+    return _ess_from_chains(_rank_normalize(np.asarray(chains, dtype=float)))
 
 
 def tail_effective_sample_size(chains: np.ndarray) -> np.ndarray:
-    """Tail ESS per parameter: ESS of the last 50% of each chain."""
-    return _ess_from_chains(chains, frac=0.5)
+    """Minimum ESS of the lower 5% and upper 95% quantile indicators."""
+    chains = np.asarray(chains, dtype=float)
+    lower, upper = np.quantile(chains, [0.05, 0.95], axis=(0, 1))
+    return np.minimum(
+        _ess_from_chains((chains <= lower).astype(float)),
+        _ess_from_chains((chains >= upper).astype(float)),
+    )
 
 
 def autocorrelation_time(chains: np.ndarray) -> np.ndarray:
-    """Geyer integrated autocorrelation time per parameter (bulk)."""
+    """Geyer integrated autocorrelation time in each original coordinate."""
     chains = np.asarray(chains, dtype=float)
-    m, n, d = chains.shape
-    tau = np.empty(d)
-    for k in range(d):
-        acfs = np.array([_autocorr(chains[c, :, k]) for c in range(m)])
-        rho = acfs.mean(axis=0)
+    _split_chains(chains)  # validate without treating walkers as independent
+    tau = np.empty(chains.shape[2])
+    for k in range(chains.shape[2]):
+        rho = np.mean([_autocorr(row[:, k]) for row in chains], axis=0)
         tau[k] = _geyer_tau(rho)
     return tau
+
+
+def ensemble_diagnostics(raw_chains: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Diagnose each walker index across independently seeded ensembles.
+
+    For a fixed walker index, ensembles are independent chains. Aggregate
+    worst R-hat/tau and minimum ESS across walker indices, without multiplying
+    ESS by the number of mutually dependent walkers.
+    """
+    raw = np.asarray(raw_chains, dtype=float)
+    if raw.ndim != 4 or not np.all(np.isfinite(raw)):
+        raise ValueError("raw_chains must be finite (ensembles, walkers, steps, parameters)")
+    results = []
+    for w in range(raw.shape[1]):
+        chains = raw[:, w]
+        results.append((split_rhat(chains), effective_sample_size(chains),
+                        tail_effective_sample_size(chains), autocorrelation_time(chains)))
+    rhat, bulk, tail, tau = (np.stack([r[i] for r in results]) for i in range(4))
+    return rhat.max(axis=0), bulk.min(axis=0), tail.min(axis=0), tau.max(axis=0)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,36 +290,33 @@ class MCMCRunner:
             rng = np.random.default_rng(self.config.seed + e)
             p0 = self._init_walkers(rng, n_walkers)
             sampler = emcee.EnsembleSampler(n_walkers, ndim, self._logpost_wrapped)
+            sampler.random_state = np.random.RandomState(self.config.seed + e).get_state()
             total = self.config.n_burn + self.config.n_steps
             sampler.run_mcmc(p0, total, progress=False)
             chain = sampler.get_chain(discard=self.config.n_burn, flat=False)
             chains_list.append(np.transpose(chain, (1, 0, 2)))  # (n_walkers, n_steps, ndim)
             accept_list.append(float(np.mean(sampler.acceptance_fraction)))
 
-        # Combine ensembles: (n_ensembles, n_steps, ndim) by averaging walkers.
-        chains = np.stack(
-            [c.mean(axis=0) for c in chains_list], axis=0
-        )  # (n_ensembles, n_steps, ndim)
-        n_samples = int(chains.shape[0] * chains.shape[1])
-
-        post_cov = np.cov(chains.reshape(-1, ndim).T)
+        # Keep every post-burn-in state; never compute posterior width from means.
+        raw_chains = np.stack(chains_list, axis=0)
+        self.last_chains = raw_chains
+        samples = raw_chains.reshape(-1, ndim)
+        n_samples = len(samples)
+        post_cov = np.atleast_2d(np.cov(samples, rowvar=False))
         whitened = None
         if self.prior_cov is not None:
             try:
                 whitened = whiten_covariance(post_cov, self.prior_cov)
             except Exception:
                 whitened = None
-        rhat = split_rhat(chains)
-        ess_bulk = effective_sample_size(chains)
-        ess_tail = tail_effective_sample_size(chains)
-        tau = autocorrelation_time(chains)
+        rhat, ess_bulk, ess_tail, tau = ensemble_diagnostics(raw_chains)
         acceptance = float(np.mean(accept_list))
 
-        rhat_max = float(np.nanmax(rhat)) if rhat.size else np.inf
-        ess_min = float(np.nanmin(ess_bulk)) if ess_bulk.size else 0.0
-        ess_tail_min = float(np.nanmin(ess_tail)) if ess_tail.size else 0.0
-        tau_max = float(np.nanmax(tau)) if tau.size else np.inf
-        chain_len = chains.shape[1]
+        rhat_max = float(np.max(rhat)) if rhat.size and np.all(np.isfinite(rhat)) else np.inf
+        ess_min = float(np.min(ess_bulk)) if ess_bulk.size and np.all(np.isfinite(ess_bulk)) else 0.0
+        ess_tail_min = float(np.min(ess_tail)) if ess_tail.size and np.all(np.isfinite(ess_tail)) else 0.0
+        tau_max = float(np.max(tau)) if tau.size and np.all(np.isfinite(tau)) else np.inf
+        chain_len = raw_chains.shape[2]
         tau_covered = tau_max < chain_len / self.config.tau_coverage
 
         converged = (
@@ -313,7 +341,8 @@ class MCMCRunner:
         return MCMCResult(
             model_id=self.model_id, n_parameters=ndim,
             n_walkers=n_walkers, n_ensembles=n_ensembles, n_samples=n_samples,
-            posterior_mean=chains.reshape(-1, ndim).mean(axis=0).tolist(),
+            posterior_mean=samples.mean(axis=0).tolist(),
+            diagnostic_samples_per_walker=n_ensembles * chain_len,
             posterior_cov=post_cov.tolist(),
             whitened_cov=whitened.tolist() if whitened is not None else None,
             rhat=np.where(np.isfinite(rhat), rhat, np.nan).tolist(),
@@ -334,10 +363,21 @@ class MCMCRunner:
         out_dir.mkdir(parents=True, exist_ok=True)
         summary_path = out_dir / "summary.json"
         if resume and summary_path.is_file():
-            return json.loads(summary_path.read_text(encoding="utf-8"))
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            if summary.get("schema_version") != SCHEMA_VERSION or not (out_dir / "chains.npz").is_file():
+                raise ValueError("Legacy or incomplete MCMC result: use a new output directory "
+                                 "or resume=False after archiving old results.")
+            if summary.get("config") != asdict(self.config) or summary.get("param_ids") != self.param_ids:
+                raise ValueError("MCMC configuration or parameter order changed; use a new output directory.")
+            return summary
         res = self.run()
+        np.savez_compressed(out_dir / "chains.npz", chains=self.last_chains,
+                            param_ids=np.asarray(self.param_ids),
+                            axis_order="ensemble,walker,step,parameter",
+                            schema_version=SCHEMA_VERSION)
         summary = asdict(res)
         summary["param_ids"] = self.param_ids
+        summary["config"] = asdict(self.config)
         summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
                                 encoding="utf-8")
         return summary

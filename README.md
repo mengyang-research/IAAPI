@@ -6,6 +6,15 @@ The project is intended for researchers who use mechanistic ODEs in systems biol
 
 > **Release status:** research preview (`0.1.0`). The model architecture, training code, inference API, diagnostics, and examples are public. Pretrained weights are not bundled with this release, so neural inference requires a compatible checkpoint trained by the user.
 
+## Scientific integrity and compatibility
+
+See [scientific integrity fixes](docs/scientific_integrity_fixes.md) for corrected
+MCMC summaries, frozen holdout evaluation, versioned FIM descriptors, and removal
+of random scientific-result fallbacks. The legacy public training generator still
+requires the author's MAP-input and PEtab-noise implementation before it can
+reproduce those manuscript protocols. Historical figure CSVs and experiments
+are not validated or changed by these code fixes.
+
 ## What is included
 
 - PEtab/SBML loading and graph construction.
@@ -39,7 +48,7 @@ python -m pip install -e ".[training,validation]"
 python -m pip install -e ".[all]"
 ```
 
-Python 3.10 or newer is required. AMICI-based workflows may also require a compiler toolchain appropriate for your platform.
+Python 3.11 or newer is required. AMICI-based workflows may also require a compiler toolchain appropriate for your platform.
 
 ## Quick start: inspect a PEtab model
 

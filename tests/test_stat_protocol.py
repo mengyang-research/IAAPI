@@ -19,8 +19,8 @@ from iaapi.evaluation.stat_protocol import (
     bootstrap_ci_r,
     evaluate_gate,
     inner_select_alpha,
+    fit_ridge,
     nested_model_cv,
-    permutation_test_nested,
     permutation_test_p,
     ridge_fit_predict,
 )
@@ -77,12 +77,14 @@ def test_n_below_threshold_fails_gate():
 
 def test_sealed_holdout_evaluated_once():
     X, y = _signal_data(n=20, noise=0.05)
-    sh = SealedHoldout(X, y, primary_descriptor_idx=(0, 1, 2))
-    r1 = sh.evaluate_once(alpha=1.0)
+    X_train, y_train = _signal_data(n=40, seed=10, noise=0.05)
+    predictor = fit_ridge(X_train, y_train, 1.0, (0, 1, 2))
+    sh = SealedHoldout(X, y, predictor=predictor)
+    r1 = sh.evaluate_once()
     assert r1["evaluated"] is True
     assert "pearson_r" in r1
     with pytest.raises(RuntimeError):
-        sh.evaluate_once(alpha=1.0)
+        sh.evaluate_once()
 
 
 def test_inner_select_alpha_returns_grid_member():
@@ -284,11 +286,11 @@ def test_deterministic_seed():
 
 
 def test_schema_version_bumped():
-    """R0-02 bumps schema version to 2.0 to signal the protocol fix."""
+    """R0-02 bumps schema version to 3.0 to signal the protocol fix."""
     from iaapi.evaluation.stat_protocol import SCHEMA_VERSION
-    assert SCHEMA_VERSION == "2.0"
+    assert SCHEMA_VERSION == "3.0"
     rng = np.random.default_rng(60)
     X = rng.normal(size=(20, 3))
     y = 2.0 * X[:, 0] + 0.1 * rng.standard_normal(20)
     res = nested_model_cv(X, y, _cfg())
-    assert res["schema_version"] == "2.0"
+    assert res["schema_version"] == "3.0"
