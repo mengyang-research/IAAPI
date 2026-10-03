@@ -33,7 +33,7 @@ def test_isotropic_spectrum():
     fim = 42.0 * np.eye(d)  # arbitrary scale
     res = compute_fim_descriptors(fim)
     desc = res["descriptors"]
-    r = max(1, math.ceil(d / 3))
+    r = min(3, d)
 
     assert math.isclose(desc[0], 1.0, abs_tol=1e-10), f"entropy_norm {desc[0]}"
     assert math.isclose(desc[1], 1.0, abs_tol=1e-10), f"eff_rank {desc[1]}"
@@ -41,7 +41,7 @@ def test_isotropic_spectrum():
     assert math.isclose(desc[4], 0.0, abs_tol=1e-10), f"curvature {desc[4]}"
     assert math.isclose(desc[5], 0.0, abs_tol=1e-10), f"log_range {desc[5]}"
     assert math.isclose(desc[6], r / d, abs_tol=1e-10), f"top_r_frac {desc[6]}"
-    assert math.isclose(desc[7], 1.0, abs_tol=1e-10), f"above_thresh {desc[7]}"
+    assert math.isclose(desc[7], 0.0, abs_tol=1e-10), f"decay_slope {desc[7]}"
 
 
 def test_rank1_spectrum():
@@ -207,12 +207,12 @@ def test_negative_eigenvalue_mass_flag():
 # --------------------------------------------------------------------------- #
 # Normalized r and threshold fraction
 # --------------------------------------------------------------------------- #
-def test_top_r_uses_normalized_r():
-    """r = ceil(n/3), not fixed 3."""
-    for d in [3, 6, 9, 12, 15]:
+def test_top_3_uses_fixed_count():
+    """Top three, or all available eigenvalues for n < 3."""
+    for d in [1, 2, 3, 6, 9, 12, 15]:
         fim = np.eye(d)
         res = compute_fim_descriptors(fim)
-        r = max(1, math.ceil(d / 3))
+        r = min(3, d)
         expected_top_r = r / d  # all eigenvalues equal
         assert math.isclose(res["descriptors"][6], expected_top_r,
                             abs_tol=1e-10), f"d={d}: {res['descriptors'][6]} != {expected_top_r}"
@@ -222,7 +222,7 @@ def test_above_threshold_fraction():
     """Known spectrum -> exact count above tau * max."""
     eigs = np.array([10.0, 5.0, 0.5, 0.05, 0.001])
     fim = np.diag(eigs)
-    res = compute_fim_descriptors(fim, tau=DEFAULT_TAU)
+    res = compute_fim_descriptors(fim, tau=DEFAULT_TAU, feature_version="1.0")
     # tau=0.01, threshold = 0.01 * 10 = 0.1
     # eigs > 0.1: [10, 5, 0.5] -> 3/5
     assert math.isclose(res["descriptors"][7], 3.0 / 5, abs_tol=1e-10)
@@ -235,7 +235,8 @@ def test_descriptor_names_and_count():
     """8 frozen descriptors with canonical names."""
     assert len(DESCRIPTOR_NAMES) == 8
     assert DESCRIPTOR_NAMES[0] == "spectral_entropy_norm"
-    assert DESCRIPTOR_NAMES[7] == "above_threshold_fraction"
+    assert DESCRIPTOR_NAMES[6] == "top_3_information_fraction"
+    assert DESCRIPTOR_NAMES[7] == "decay_slope"
     res = compute_fim_descriptors(np.eye(4))
     assert res["names"] == DESCRIPTOR_NAMES
     assert len(res["descriptors"]) == 8
