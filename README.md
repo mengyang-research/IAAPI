@@ -48,7 +48,7 @@ python -m pip install -e ".[training,validation]"
 python -m pip install -e ".[all]"
 ```
 
-Python 3.10 or newer is required. AMICI-based workflows may also require a compiler toolchain appropriate for your platform.
+Python 3.11 or newer is required. AMICI-based workflows may also require a compiler toolchain appropriate for your platform.
 
 ## Quick start: inspect a PEtab model
 
